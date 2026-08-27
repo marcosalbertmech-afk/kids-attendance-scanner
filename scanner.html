@@ -1,0 +1,148 @@
+<!DOCTYPE html>
+<html lang="ar" dir="rtl">
+  <head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0">
+    <title>تسجيل الحضور</title>
+    <script src="https://unpkg.com/jsqr@1.4.0/dist/jsQR.js"></script>
+    <style>
+      * { box-sizing: border-box; }
+      html, body {
+        margin: 0; padding: 0; height: 100vh; width: 100vw;
+        font-family: Arial, Tahoma, sans-serif; background: #111;
+        color: #fff; overflow: hidden;
+      }
+      #wrap { position: relative; height: 100vh; width: 100vw; display: flex; flex-direction: column; }
+      header { padding: 14px; text-align: center; background: #1967d2; font-size: 18px; font-weight: bold; flex: 0 0 auto; }
+      #video-container { position: relative; flex: 1 1 auto; min-height: 200px; overflow: hidden; background: #000; }
+      video { position: absolute; top: 0; left: 0; width: 100%; height: 100%; object-fit: cover; background: #000; }
+      .frame {
+        position: absolute; top: 50%; left: 50%; transform: translate(-50%, -50%);
+        width: 70vw; max-width: 300px; height: 70vw; max-height: 300px;
+        border: 3px solid #34a853; border-radius: 16px; box-shadow: 0 0 0 2000px rgba(0,0,0,0.35);
+      }
+      #result {
+        position: absolute; bottom: 0; left: 0; right: 0; padding: 22px 18px;
+        text-align: center; transition: background 0.2s; background: rgba(0,0,0,0.75);
+      }
+      #result.success { background: #188038; }
+      #result.warning { background: #b06000; }
+      #result.error { background: #c5221f; }
+      #result h2 { margin: 0 0 6px; font-size: 20px; }
+      #result p { margin: 0; font-size: 15px; opacity: 0.95; }
+      #status { padding: 10px; text-align: center; font-size: 13px; color: #aaa; flex: 0 0 auto; }
+    </style>
+  </head>
+  <body>
+    <div id="wrap">
+      <header>📷 ماسح الحضور - للخدام فقط</header>
+      <div id="video-container">
+        <video id="video" playsinline autoplay muted></video>
+        <div class="frame"></div>
+        <div id="result" style="display:none;"></div>
+      </div>
+      <div id="status">جهّز الكاميرا... وجّهها على كود الطفل</div>
+    </div>
+
+    <canvas id="canvas" style="display:none;"></canvas>
+
+    <script>
+      // =====================================================================
+      // غيّر السطرين دول بس عند النشر:
+      // =====================================================================
+      const APPS_SCRIPT_URL = "https://script.google.com/macros/s/AKfycbxxRRAcJcrsPhjVeoxtie7TM1RgP4tytBYr57zlOeTqLR8yVh4cDcJB5p9dhBm97etj/exec";
+      const APP_TOKEN = "k7nvb145KUU-h3JqEC5LIl0MIypqGuc4"; // لازم يطابق APP_TOKEN في الـ.gs بالظبط
+      // =====================================================================
+
+      const video = document.getElementById('video');
+      const canvas = document.getElementById('canvas');
+      const ctx = canvas.getContext('2d');
+      const statusEl = document.getElementById('status');
+      const resultEl = document.getElementById('result');
+
+      let scanning = true;
+      let cooldownUntil = 0;
+
+      video.setAttribute("playsinline", true);
+      video.setAttribute("webkit-playsinline", true);
+      video.muted = true;
+      video.autoplay = true;
+
+      function startCamera(constraints) {
+        return navigator.mediaDevices.getUserMedia(constraints).then(stream => {
+          video.srcObject = stream;
+          return new Promise((resolve) => {
+            video.onloadedmetadata = () => {
+              video.play().then(resolve).catch(resolve);
+            };
+          });
+        });
+      }
+
+      startCamera({ video: { facingMode: { ideal: "environment" }, width: { ideal: 640 }, height: { ideal: 480 } }, audio: false })
+        .then(() => { statusEl.textContent = "جهّز الكاميرا... وجّهها على كود الطفل"; requestAnimationFrame(tick); })
+        .catch(() => {
+          startCamera({ video: true, audio: false })
+            .then(() => { statusEl.textContent = "جهّز الكاميرا... وجّهها على كود الطفل"; requestAnimationFrame(tick); })
+            .catch(err => {
+              statusEl.textContent = "تعذر فتح الكاميرا: " + err.message;
+            });
+        });
+
+      function tick() {
+        if (video.readyState >= video.HAVE_CURRENT_DATA && video.videoWidth > 0) {
+          canvas.height = video.videoHeight;
+          canvas.width = video.videoWidth;
+          ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
+          const imageData = ctx.getImageData(0, 0, canvas.width, canvas.height);
+          const code = jsQR(imageData.data, imageData.width, imageData.height);
+
+          if (code && code.data && scanning && Date.now() > cooldownUntil) {
+            handleScan(code.data);
+          }
+        }
+        requestAnimationFrame(tick);
+      }
+
+      function handleScan(studentId) {
+        scanning = false;
+        statusEl.textContent = "جاري التسجيل...";
+
+        // ملاحظة: بنبعت Content-Type: text/plain عمدًا (مش application/json)
+        // عشان نتفادى CORS preflight اللي Apps Script مش بيرد عليه
+        fetch(APPS_SCRIPT_URL, {
+          method: "POST",
+          headers: { "Content-Type": "text/plain;charset=utf-8" },
+          body: JSON.stringify({ token: APP_TOKEN, id: studentId })
+        })
+          .then(r => r.json())
+          .then(showResult)
+          .catch(err => showError({ message: "تعذر الاتصال بالسيرفر: " + err.message }));
+      }
+
+      function showResult(res) {
+        resultEl.style.display = "block";
+        resultEl.className = res.status;
+        resultEl.innerHTML = "<h2>" + res.title + "</h2><p>" + res.message + "</p>";
+        cooldownUntil = Date.now() + 2500;
+        setTimeout(() => {
+          resultEl.style.display = "none";
+          scanning = true;
+          statusEl.textContent = "جهّز الكاميرا... وجّهها على كود الطفل";
+        }, 2500);
+      }
+
+      function showError(err) {
+        resultEl.style.display = "block";
+        resultEl.className = "error";
+        resultEl.innerHTML = "<h2>خطأ</h2><p>" + err.message + "</p>";
+        cooldownUntil = Date.now() + 2500;
+        setTimeout(() => {
+          resultEl.style.display = "none";
+          scanning = true;
+          statusEl.textContent = "جهّز الكاميرا... وجّهها على كود الطفل";
+        }, 2500);
+      }
+    </script>
+  </body>
+</html>
